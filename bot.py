@@ -401,10 +401,8 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 1. AVVAL ESKI JADVALNI O'CHIRISH (agar mavjud bo'lsa)
+    # 1. Loyihalar jadvali (manzilli sheet uchun) — o'zgarmagan
     cursor.execute("DROP TABLE IF EXISTS projects")
-
-    # 2. YANGI JADVALNI TO'LIQ YARATISH
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,20 +425,38 @@ def init_db():
     )
     ''')
     
-    # Indexlar
+    # Indexlar loyihalar uchun
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_size ON projects(size_type)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_tuman ON projects(tuman)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_korxona ON projects(korxona_turi)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_holat ON projects(holat)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_muammo ON projects(muammo)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_muddati ON projects(muammo_muddati)')
-    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_boshqarma ON projects(boshqarma_masul)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_viloyat ON projects(viloyat_masul)')
     
+    # 2. Yangi jadval: kunlik ishlar (kunlik ishlar sheet uchun)
+    cursor.execute("DROP TABLE IF EXISTS daily_works")
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS daily_works (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tuman TEXT NOT NULL,          -- D ustuni
+        vazifa TEXT NOT NULL,         -- B ustuni (Amalga oshiriladigan vazifalar)
+        holat TEXT DEFAULT '—',       -- C ustuni (Bajarilishi...)
+        sana TEXT,                    -- D2 hujayrasidagi sana
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    # Indexlar kunlik ishlar uchun (tez qidirish uchun)
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_tuman_daily ON daily_works(tuman)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sana_daily ON daily_works(sana)')
+    
     conn.commit()
     conn.close()
-    print(f"✅ Database yaratildi: {DB_FILE}")
+    print(f"✅ Database yaratildi/yangilandi: {DB_FILE}")
+    print("  • projects jadvali — manzilli sheet uchun")
+    print("  • daily_works jadvali — kunlik ishlar sheet uchun")
 
 def sync_sheets_to_db():
     """Google Sheets -> SQLite (har 5 minutda)"""
@@ -3526,58 +3542,91 @@ def generate_daily_report(df):
     return "\n".join(lines)
 
 async def daily_works_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kunlik ishlar (Excel) ni ko'rsatish"""
     query = update.callback_query
     await query.answer()
     
-    df = get_daily_works()
-    if df.empty:
-        await query.edit_message_text("Hozircha kunlik ishlar jadvalida ma'lumot yo'q.")
+    user_id = query.from_user.id
+    if user_id not in USERS:
+        await query.edit_message_text("⚠️ Ruxsat yo'q!")
         return
     
-    date_str = df.attrs.get('date', 'sana ko‘rsatilmagan')
-    
-    # Tumanlar bo'yicha guruhlash
-    district_col = df.columns[3]  # D ustuni
-    stats = df[district_col].value_counts().to_dict()
-    
-    # Faqat ro'yxatdagi tumanlar va faol bo'lganlari
-    active_districts = [d for d in ALLOWED_DISTRICTS if d in stats and stats[d] > 0]
-    
-    if not active_districts:
-        text = f"📅 Kunlik ishlar hisoboti – {date_str}\n\nBugun hech qaysi tuman vazifa kiritmagan."
-    else:
-        lines = [f"📅 Kunlik ishlar hisoboti – {date_str}"]
-        lines.append(f"Faol tumanlar soni: {len(active_districts)} ta (jami vazifalar: {len(df)} ta)")
-        lines.append("─" * 50)
+    try:
+        df = get_daily_works()
         
-        buttons = []
-        for dist in active_districts:
-            count = stats[dist]
-            lines.append(f"🏙 {dist:<20} — {count} ta vazifa")
-            buttons.append(
-                InlineKeyboardButton(
-                    f"{dist} ({count})",
-                    callback_data=f"daily_works:detail:{dist}"
-                )
+        if df.empty:
+            text = "📋 Kunlik ishlar sheet'ida ma'lumot yo'q!"
+        else:
+            # Ma'lumotlarni formatlash (masalan, markdown jadval)
+            text = "📋 **Kunlik ishlar (Excel dan):**\n\n"
+            text += df.to_markdown(index=False)  # Pandas to_markdown yordamida jadval
+            
+            if len(text) > MAX_TEXT:
+                text = text[:MAX_TEXT] + "\n... (to'liq ko'rish uchun Excel ni oching)"
+        
+        # Tugmalar (masalan, orqaga qaytish)
+        keyboard = [
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="menu:main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    except Exception as e:
+        await query.edit_message_text(f"⚠️ Xatolik: {str(e)}")
+
+def sync_daily_works_to_db():
+    try:
+        df = get_daily_works()  # Sizning "kunlik ishlar" sheetidan o'qish funksiyangiz
+        if df.empty:
+            return
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        sana = df.attrs.get('date')  # D2 dagi sana
+        if not sana:
+            sana = datetime.now().strftime('%Y-%m-%d')
+        
+        # Eski bugungi ma'lumotlarni tozalash
+        cursor.execute("DELETE FROM daily_works WHERE sana = ?", (sana,))
+        
+        records = []
+        for _, row in df.iterrows():
+            tuman = str(row.get('Tuman nomi', '')).strip() or "Noma'lum"
+            vazifa = str(row.get('Amalga oshiriladigan vazifalar...', '')).strip()
+            holat = str(row.get('Bajarilishi...', '')).strip() or "—"
+            
+            if vazifa:
+                records.append((tuman, vazifa, holat, sana))
+        
+        if records:
+            cursor.executemany(
+                "INSERT INTO daily_works (tuman, vazifa, holat, sana) VALUES (?, ?, ?, ?)",
+                records
             )
+            conn.commit()
+            print(f"Kunlik ishlar: {len(records)} ta yozuv saqlandi ({sana})")
         
-        lines.append("─" * 50)
-        lines.append("Qisqa tahlil:")
-        max_d = max(stats, key=stats.get)
-        lines.append(f"• Eng faol tuman: {max_d} ({stats[max_d]} ta)")
+        conn.close()
         
-        text = "\n".join(lines)
-    
-    # Tugmalar (faqat faol tumanlar uchun)
-    keyboard = []
-    for i in range(0, len(buttons), 2):
-        keyboard.append(buttons[i:i+2])
-    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="menu:main")])
-    
-    await query.edit_message_text(
-        text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    except Exception as e:
+        print(f"Kunlik ishlar sinxronizatsiyada xato: {e}")
+
+def get_daily_works():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query(
+        "SELECT tuman, vazifa, holat, sana FROM daily_works ORDER BY sana DESC LIMIT 1000",
+        conn
     )
+    conn.close()
+    
+    if not df.empty:
+        latest_sana = df['sana'].max()
+        df = df[df['sana'] == latest_sana]
+        df.attrs['date'] = latest_sana
+    
+    return df
 
 async def daily_works_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
