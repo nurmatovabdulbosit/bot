@@ -15,6 +15,7 @@ from config import BOT_TOKEN
 from users import USERS, PROBLEM_REPORT_USERS
 from sheets import get_dataframe
 from sheets import get_daily_works  # get_dataframe dan keyin qo'shing
+
 # =========================
 # KONSTANTALAR
 # =========================
@@ -44,9 +45,13 @@ COLUMN_INDEXES = {
     'muammo_muddati': 32     # AG - Muammo muddati
 }
 
-# =========================
-# DAILY PLANS (KUNLIK ISH REJALARI)
-# =========================
+# Kunlik ishlar uchun ustun indekslari
+DAILY_WORKS_COLUMNS = {
+    'vazifa': 1,           # B - Amalga oshiriladigan vazifalar
+    'holat': 2,            # C - Bajarilishi...
+    'tuman': 3,            # D - Tuman
+    'sana': 0              # D2 - Sana (agar alohida ustun bo'lsa)
+}
 
 # =========================
 # DAILY PLANS (KUNLIK ISH REJALARI) - ROLLAR BILAN
@@ -93,7 +98,7 @@ class DailyPlans:
             'id': plan_id,
             'text': plan_text,
             'due_date': due_date,  # Muddati
-            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'created_at': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
             'user_id': user_id,  # Kim qo'shganligi
             'completed': False,
             'notified': False  # Eslatma yuborilganligi
@@ -106,7 +111,7 @@ class DailyPlans:
     def get_plans(self, user_id: int, plan_date: str = None, viewer_id: int = None):
         """Kunlik rejalarni olish (rolga qarab)"""
         if plan_date is None:
-            plan_date = datetime.now().strftime('%Y-%m-%d')
+            plan_date = datetime.now().strftime('%d-%m-%Y')
         
         if plan_date not in self.data:
             return []
@@ -125,7 +130,7 @@ class DailyPlans:
     def get_user_plans(self, user_id: int, plan_date: str = None):
         """Faqat o'z rejalarini olish"""
         if plan_date is None:
-            plan_date = datetime.now().strftime('%Y-%m-%d')
+            plan_date = datetime.now().strftime('%d-%m-%Y')
         
         if plan_date not in self.data:
             return []
@@ -135,7 +140,7 @@ class DailyPlans:
     def get_all_plans_for_admin(self, plan_date: str = None):
         """Admin uchun barcha rejalarni olish"""
         if plan_date is None:
-            plan_date = datetime.now().strftime('%Y-%m-%d')
+            plan_date = datetime.now().strftime('%d-%m-%Y')
         
         if plan_date not in self.data:
             return []
@@ -151,7 +156,7 @@ class DailyPlans:
     def get_upcoming_plans(self, user_id: int, viewer_id: int = None):
         """Kelajakdagi (muddati bor) rejalarni olish"""
         upcoming = []
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime('%d-%m-%Y')
         
         for date_key, date_data in self.data.items():
             # Admin uchun barcha rejalar
@@ -181,7 +186,7 @@ class DailyPlans:
     
     def get_today_plans_with_due_date(self, viewer_id: int = None):
         """Bugungi muddati kelgan rejalarni olish"""
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime('%d-%m-%Y')
         today_plans = []
         
         for date_key, date_data in self.data.items():
@@ -198,7 +203,8 @@ class DailyPlans:
     
     def get_all_plans_today(self, viewer_id: int = None):
         """Bugungi barcha rejalarni olish"""
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime('%d-%m-%Y')
+
         
         if viewer_id and viewer_id in USERS and USERS[viewer_id].get('role') == 'admin':
             # Admin uchun barcha rejalar
@@ -222,7 +228,7 @@ class DailyPlans:
                 for plan in plans:
                     if plan['id'] == plan_id:
                         plan['completed'] = not plan['completed']
-                        plan['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S') if plan['completed'] else None
+                        plan['completed_at'] = datetime.now().strftime('%d-%m-%Y %H:%M:%S') if plan['completed'] else None
                         plan['completed_by'] = viewer_id  # Kim bajardi
                         self._save_data()
                         return True
@@ -234,7 +240,7 @@ class DailyPlans:
         for plan in self.data[plan_date][str(user_id)]:
             if plan['id'] == plan_id:
                 plan['completed'] = not plan['completed']
-                plan['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S') if plan['completed'] else None
+                plan['completed_at'] = datetime.now().strftime('%d-%m-%Y %H:%M:%S') if plan['completed'] else None
                 plan['completed_by'] = user_id  # Kim bajardi
                 self._save_data()
                 return True
@@ -277,7 +283,7 @@ class DailyPlans:
     def clear_plans(self, user_id: int, plan_date: str = None, viewer_id: int = None):
         """Barcha rejalarni tozalash (faqat o'z rejalarini)"""
         if plan_date is None:
-            plan_date = datetime.now().strftime('%Y-%m-%d')
+            plan_date = datetime.now().strftime('%d-%m-%Y')
         
         # Admin faqat o'zining rejalarini tozalay oladi yoki barchasini
         if viewer_id and viewer_id in USERS and USERS[viewer_id].get('role') == 'admin' and viewer_id == user_id:
@@ -525,15 +531,94 @@ def sync_sheets_to_db():
         import traceback
         traceback.print_exc()
 
+def sync_daily_works_to_db():
+    """Kunlik ishlar ma'lumotlarini Google Sheets dan SQLite ga yuklash"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlar ma'lumotlari yangilanmoqda...")
+    
+    try:
+        # Google Sheets dan kunlik ishlar ma'lumotlarini olish
+        df = get_daily_works()
+        
+        if df is None or df.empty:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlar ma'lumotlari topilmadi")
+            return
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Eskilarini tozalash
+        cursor.execute("DELETE FROM daily_works")
+        
+        # Yangilarini qo'shish
+        records = []
+        for _, row in df.iterrows():
+            # Tuman nomini tozalash
+            tuman = str(row.iloc[DAILY_WORKS_COLUMNS['tuman']]).strip() if len(row) > DAILY_WORKS_COLUMNS['tuman'] else "Noma'lum"
+            
+            # Vazifa nomini tozalash
+            vazifa = str(row.iloc[DAILY_WORKS_COLUMNS['vazifa']]).strip() if len(row) > DAILY_WORKS_COLUMNS['vazifa'] else ""
+            
+            # Holatni tozalash
+            holat = str(row.iloc[DAILY_WORKS_COLUMNS['holat']]).strip() if len(row) > DAILY_WORKS_COLUMNS['holat'] else "—"
+            
+            # Sanani aniqlash
+            sana = None
+            # D2 hujayrasidan sana olish
+            if len(df.columns) > DAILY_WORKS_COLUMNS['sana']:
+                sana_str = str(df.columns[DAILY_WORKS_COLUMNS['sana']])
+                if sana_str:
+                    try:
+                        # Sanani turli formatlarda parse qilish
+                        sana_formats = ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y']
+                        for fmt_str in sana_formats:
+                            try:
+                                sana_date = datetime.strptime(sana_str, fmt_str)
+                                sana = sana_date.strftime('%Y-%m-%d')
+                                break
+                            except:
+                                continue
+                    except:
+                        pass
+            
+            # Agar sana aniqlanmagan bo'lsa, bugungi sana
+            if not sana:
+                sana = datetime.now().strftime('%Y-%m-%d')
+            
+            # Agar vazifa bo'sh bo'lmasa, qo'shamiz
+            if vazifa and tuman != "Noma'lum":
+                records.append((tuman, vazifa, holat, sana))
+        
+        # Batch insert
+        if records:
+            cursor.executemany('''
+                INSERT INTO daily_works (tuman, vazifa, holat, sana)
+                VALUES (?, ?, ?, ?)
+            ''', records)
+        
+        conn.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM daily_works")
+        count = cursor.fetchone()[0]
+        
+        conn.close()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {count} ta kunlik vazifa bazaga saqlandi ✓")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlarni yangilashda xatolik: {e}")
+        import traceback
+        traceback.print_exc()
+
 def start_sync_service():
     """Sinxronizatsiya servisi"""
     # Dastlabki yuklash
     sync_sheets_to_db()
+    sync_daily_works_to_db()
     
     def sync_loop():
         while True:
             ttime.sleep(300)  # 5 minut
             sync_sheets_to_db()
+            sync_daily_works_to_db()
     
     thread = threading.Thread(target=sync_loop, daemon=True)
     thread.start()
@@ -563,8 +648,8 @@ def main_menu():
         [InlineKeyboardButton("📍 Муаммоли туманлар", callback_data="menu:problem_district")],
         [InlineKeyboardButton("⏰ Муаммо муддати", callback_data="menu:muddat_report")],
         [InlineKeyboardButton("👥 Ходимлар кесимида", callback_data="menu:employees")],
-        [InlineKeyboardButton("📅 Кунлик иш режалари", callback_data="menu:daily_plans")],
-        [InlineKeyboardButton("📋 Kunlik ishlar (Excel)", callback_data="daily_works:view")],  # YANGI TUGMA
+        [InlineKeyboardButton("📅 Кунлик иш режаларим (шахсий)", callback_data="menu:daily_plans")],
+        [InlineKeyboardButton("📋 Кунлик вазифалар", callback_data="daily_works:report")],  # YANGI TUGMA
     ])
 
 def pager(prefix, page, total):
@@ -596,6 +681,16 @@ def plan_actions_menu(plan_date: str, plan_id: int):
             InlineKeyboardButton("❌ Ўчириш", callback_data=f"daily:delete:{plan_date}:{plan_id}")
         ],
         [InlineKeyboardButton("⬅️ Режаларга", callback_data="menu:daily_plans")]
+    ])
+
+def daily_works_menu():
+    """Kunlik ishlar menyusi"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Bugungi hisobot", callback_data="daily_works:report")],
+        [InlineKeyboardButton("🗂 Tumanlar bo'yicha", callback_data="daily_works:districts")],
+        [InlineKeyboardButton("📋 Barcha vazifalar", callback_data="daily_works:all:0")],
+        [InlineKeyboardButton("🔄 Yangilash", callback_data="daily_works:refresh")],
+        [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
     ])
 
 # =========================
@@ -673,10 +768,41 @@ def full_report():
         # Bugungi muddati kelgan rejalar
         today_due_plans = daily_plans.get_today_plans_with_due_date()
         
+        # Kunlik ishlar statistika - БУ ЕРДА ТЎГРИЛАШ КЕРАК
+        try:
+            # Охирги санадаги маълумотларни олиш
+            cursor.execute('''
+                SELECT sana FROM daily_works 
+                ORDER BY sana DESC 
+                LIMIT 1
+            ''')
+            
+            last_sana_result = cursor.fetchone()
+            last_sana = last_sana_result[0] if last_sana_result else None
+            
+            if last_sana:
+                cursor.execute('''
+                    SELECT COUNT(*), COUNT(DISTINCT tuman) 
+                    FROM daily_works 
+                    WHERE sana = ?
+                ''', (last_sana,))
+                
+                daily_works_result = cursor.fetchone()
+                daily_works_count = daily_works_result[0] if daily_works_result else 0
+                daily_works_districts = daily_works_result[1] if daily_works_result else 0
+            else:
+                daily_works_count = 0
+                daily_works_districts = 0
+                
+        except Exception as e:
+            print(f"full_report: daily_works statistikasi xatoligi: {e}")
+            daily_works_count = 0
+            daily_works_districts = 0
+        
         lines = [
             "*Наманган вилоятида хорижий лойиҳалар дастурига хуш келибсиз!*",
             "",
-            f"📊 Жами лойиҳалар: {total_count} та",
+            f"📊 *Жами лойиҳалар*: {total_count} та",
             f"💰 Жами қиймати: {fmt(total_sum)} млн.$",
             f"💰 2026 йилда ўзлаштириладиган: {fmt(yearly_sum)} млн.$",
             f"      - янгидан бошланадиган: {new_count} та, {fmt(new_sum)} млн.$",
@@ -687,7 +813,7 @@ def full_report():
             f"  🟡 Ўрта: {size_stats.get('orta', {}).get('count', 0)} та, {fmt(size_stats.get('orta', {}).get('sum', 0))} млн.$",
             f"  🔴 Йирик: {size_stats.get('yirik', {}).get('count', 0)} та, {fmt(size_stats.get('yirik', {}).get('sum', 0))} млн.$",
             "",
-            "🏢 Корхоналар:"
+            "🏢 *Корхоналар*:"
         ]
         
         lines.extend(korxona_lines)
@@ -698,6 +824,14 @@ def full_report():
         lines.append(f"  • Бугун қўшилган: {daily_plans_count} та")
         lines.append(f"  • Бажарилган: {daily_completed} та")
         lines.append(f"  • Бугун муддати: {len(today_due_plans)} та")
+        lines.append(f"\n📋 *Кунлик вазифалар (Excel):*")
+        lines.append(f"  • Вазифалар киритилган туманлар: {daily_works_districts} та")
+        lines.append(f"  • Вазифалар сони: {daily_works_count} та")
+        
+        
+        # Агар маълумот бўлмаса, қўшимча маълумот
+        if daily_works_count == 0:
+            lines.append(f"  ⚠️ Маълумотлар мавжуд эмас")
         
         return "\n".join(lines)
         
@@ -706,10 +840,6 @@ def full_report():
         return "⚠️ Маълумотлар юкланмоқда..."
     finally:
         conn.close()
-
-# =========================
-# DAILY PLANS HANDLERS
-# =========================
 
 # =========================
 # DAILY PLANS HANDLERS (ROLLAR BILAN)
@@ -845,6 +975,7 @@ async def daily_my_plans_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 async def daily_all_plans_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin uchun barcha rejalar (pagination bilan)"""
     q = update.callback_query
@@ -1196,8 +1327,6 @@ async def daily_delete_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await q.answer("❌ Хатолик юз берди ёки рухсатингиз йўқ", show_alert=True)
 
-
-
 async def daily_add_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Yangi reja qo'shish (muddat bilan)"""
     q = update.callback_query
@@ -1208,122 +1337,6 @@ async def daily_add_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         text="✏️ *Янги иш режасини киритинг:*\n\n*Формат:*\nРежа матни | муддат (YYYY-MM-DD)\n\n*Мисоллар:*\n• Ҳужжат тайёрлаш | 2024-01-20\n• Ҳамкор билан учрашув | 2024-01-22\n• Ҳисобот тақдимоти\n\n*Эътибор:* Агар муддат кўшмасангиз, фақат режа матнини киритинг.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Бекор қилиш", callback_data="menu:daily_plans")]]),
-        parse_mode="Markdown"
-    )
-
-async def daily_my_plans_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Mening rejalarim"""
-    q = update.callback_query
-    await q.answer()
-    
-    user_id = q.from_user.id
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    plans = daily_plans.get_plans(user_id, today)
-    total, completed = daily_plans.get_stats(user_id, today)
-    
-    lines = [
-        f"📋 *{today} кун учун менинг иш режаларим*\n",
-        f"📊 Статистика: {completed}/{total} та бажарилган ({int(completed/total*100 if total > 0 else 0)}%)",
-        f""
-    ]
-    
-    if not plans:
-        lines.append("📭 Ҳозирча режалар мавжуд эмас")
-    else:
-        for plan in plans:
-            status = "✅" if plan['completed'] else "🟡"
-            created_time = plan['created_at'].split()[1][:5] if 'created_at' in plan else "N/A"
-            due_info = f" | ⏰ {plan['due_date']}" if plan.get('due_date') else ""
-            
-            lines.append(
-                f"{status} *{plan['id']}. {plan['text']}*\n"
-                f"   ⏰ {created_time}{due_info} | "
-                f"{'✅ Бажарилган' if plan['completed'] else '⏳ Кутмоқда'}"
-            )
-    
-    keyboard = []
-    
-    # Har bir reja uchun amallar tugmasi
-    if plans:
-        for plan in plans[:10]:  # Faqat birinchi 10 tasi
-            due_mark = "⏰ " if plan.get('due_date') else ""
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{'✅' if plan['completed'] else '🟡'} {plan['id']}. {due_mark}{plan['text'][:15]}...",
-                    callback_data=f"daily:view:{today}:{plan['id']}"
-                )
-            ])
-    
-    keyboard.append([InlineKeyboardButton("➕ Янги режа қўшиш", callback_data="daily:add")])
-    keyboard.append([InlineKeyboardButton("📅 Келажакдагилар", callback_data="daily:upcoming")])
-    keyboard.append([InlineKeyboardButton("⬅️ Орқага", callback_data="menu:daily_plans")])
-    
-    await q.edit_message_text(
-        text=safe_text(lines),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-async def daily_upcoming_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Kelajakdagi rejalar"""
-    q = update.callback_query
-    await q.answer()
-    
-    user_id = q.from_user.id
-    upcoming_plans = daily_plans.get_upcoming_plans(user_id)
-    
-    lines = [
-        f"📅 *Келажакдаги иш режаларим*\n",
-        f"Жами: {len(upcoming_plans)} та муддатли режа",
-        f""
-    ]
-    
-    if not upcoming_plans:
-        lines.append("📭 Ҳозирча келажакдаги режалар мавжуд эмас")
-    else:
-        today = datetime.now().date()
-        
-        for item in upcoming_plans[:15]:  # Faqat birinchi 15 tasi
-            plan_date = item['date']
-            plan = item['plan']
-            
-            due_date = plan.get('due_date')
-            if due_date:
-                try:
-                    due_datetime = datetime.strptime(due_date, '%Y-%m-%d').date()
-                    days_left = (due_datetime - today).days
-                    
-                    if days_left < 0:
-                        days_info = f"⛔ {abs(days_left)} кун ўтган"
-                    elif days_left == 0:
-                        days_info = "⚠️ Бугун муддати"
-                    elif days_left <= 3:
-                        days_info = f"⚠️ {days_left} кун қолди"
-                    else:
-                        days_info = f"📅 {days_left} кун қолди"
-                except:
-                    days_info = "📅 Муддатли"
-            else:
-                days_info = "📅 Муддатиз"
-            
-            lines.append(
-                f"⏰ *{plan['id']}. {plan['text']}*\n"
-                f"   📅 Муддат: {due_date or 'Муддатиз'}\n"
-                f"   {days_info}\n"
-                f"   🗓 Яратилган: {plan_date}\n"
-                f"   {'─' * 30}\n"
-            )
-    
-    keyboard = [
-        [InlineKeyboardButton("➕ Янги режа қўшиш", callback_data="daily:add")],
-        [InlineKeyboardButton("📋 Бугунги режаларим", callback_data="daily:my_plans:0")],
-        [InlineKeyboardButton("⬅️ Орқага", callback_data="menu:daily_plans")]
-    ]
-    
-    await q.edit_message_text(
-        text=safe_text(lines),
-        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
@@ -1375,102 +1388,6 @@ async def daily_today_due_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def daily_view_plan_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Rejani ko'rish va boshqarish"""
-    q = update.callback_query
-    await q.answer()
-    
-    data_parts = q.data.split(":")
-    plan_date = data_parts[2]
-    plan_id = int(data_parts[3])
-    
-    user_id = q.from_user.id
-    plans = daily_plans.get_plans(user_id, plan_date)
-    
-    plan = None
-    for p in plans:
-        if p['id'] == plan_id:
-            plan = p
-            break
-    
-    if not plan:
-        await q.answer("Режа топилмади", show_alert=True)
-        await daily_my_plans_cb(update, ctx)
-        return
-    
-    status = "✅ Бажарилган" if plan['completed'] else "⏳ Кутмоқда"
-    completed_time = f"\n⏰ Бажарилган вақт: {plan['completed_at']}" if plan['completed'] and 'completed_at' in plan else ""
-    
-    due_info = f"\n⏰ *Муддат:* {plan['due_date']}" if plan.get('due_date') else ""
-    
-    # Muddati qolgan kunlar
-    if plan.get('due_date') and not plan['completed']:
-        try:
-            today = datetime.now().date()
-            due_datetime = datetime.strptime(plan['due_date'], '%Y-%m-%d').date()
-            days_left = (due_datetime - today).days
-            
-            if days_left < 0:
-                due_info += f"\n⛔ *{abs(days_left)} кун муддати ўтган*"
-            elif days_left == 0:
-                due_info += f"\n⚠️ *Бугун муддати!*"
-            elif days_left <= 3:
-                due_info += f"\n⚠️ *{days_left} кун қолди*"
-            else:
-                due_info += f"\n📅 *{days_left} кун қолди*"
-        except:
-            pass
-    
-    text = (
-        f"📄 *Иш режаси №{plan['id']}*\n\n"
-        f"📝 *Тавсиф:*\n{plan['text']}\n\n"
-        f"📅 *Сана:* {plan_date}\n"
-        f"⏰ *Яратилган:* {plan['created_at']}\n"
-        f"{due_info}\n"
-        f"📊 *Ҳолати:* {status}"
-        f"{completed_time}"
-    )
-    
-    await q.edit_message_text(
-        text=text,
-        reply_markup=plan_actions_menu(plan_date, plan_id),
-        parse_mode="Markdown"
-    )
-
-async def daily_toggle_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Reja holatini o'zgartirish"""
-    q = update.callback_query
-    await q.answer()
-    
-    data_parts = q.data.split(":")
-    plan_date = data_parts[2]
-    plan_id = int(data_parts[3])
-    
-    success = daily_plans.toggle_plan(q.from_user.id, plan_date, plan_id)
-    
-    if success:
-        await q.answer("✅ Режа ҳолати ўзгартирилди", show_alert=True)
-        await daily_view_plan_cb(update, ctx)
-    else:
-        await q.answer("❌ Хатолик юз берди", show_alert=True)
-
-async def daily_delete_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Rejani o'chirish"""
-    q = update.callback_query
-    await q.answer()
-    
-    data_parts = q.data.split(":")
-    plan_date = data_parts[2]
-    plan_id = int(data_parts[3])
-    
-    success = daily_plans.delete_plan(q.from_user.id, plan_date, plan_id)
-    
-    if success:
-        await q.answer("✅ Режа ўчирилди", show_alert=True)
-        await daily_my_plans_cb(update, ctx)
-    else:
-        await q.answer("❌ Хатолик юз берди", show_alert=True)
-
 async def daily_stats_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Statistika"""
     q = update.callback_query
@@ -1478,7 +1395,7 @@ async def daily_stats_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     user_id = q.from_user.id
     user_role = USERS.get(user_id, {}).get('role', 'user')
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now().strftime('%d-%m-%Y')
     
     lines = []
     
@@ -1697,6 +1614,608 @@ async def daily_clear_confirm_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown"
     )
 
+# =========================
+# KUNLIK ISHLAR HANDLERS - YANGИЛАНИШ ТУГМАСИ БАЗАНИ ОЧИБ ТАШЛАМАЙДИ
+# =========================
+
+async def daily_works_report_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Kunlik ishlar hisobotini ko'rsatish"""
+    q = update.callback_query
+    await q.answer()
+    
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Охирги санадаги маълумотларни олиш
+        cursor.execute('''
+            SELECT sana FROM daily_works 
+            ORDER BY sana DESC 
+            LIMIT 1
+        ''')
+        
+        last_sana_result = cursor.fetchone()
+        last_sana = last_sana_result[0] if last_sana_result else datetime.now().strftime('%Y-%m-%d')
+        
+        # Умумий статистика
+        cursor.execute('''
+            SELECT 
+                COUNT(*) as total_tasks,
+                COUNT(DISTINCT tuman) as active_districts,
+                COUNT(CASE WHEN holat != '—' AND holat != '' AND holat IS NOT NULL THEN 1 END) as completed_tasks
+            FROM daily_works 
+            WHERE sana = ?
+        ''', (last_sana,))
+        
+        stats = cursor.fetchone()
+        total_tasks = stats[0] if stats else 0
+        active_districts = stats[1] if stats else 0
+        completed_tasks = stats[2] if stats else 0
+        
+        # Туманлар бўйича статистика
+        cursor.execute('''
+            SELECT tuman, COUNT(*) as task_count,
+                   COUNT(CASE WHEN holat != '—' AND holat != '' AND holat IS NOT NULL THEN 1 END) as completed_count
+            FROM daily_works 
+            WHERE sana = ?
+            GROUP BY tuman
+            ORDER BY task_count DESC
+        ''', (last_sana,))
+        
+        district_stats = cursor.fetchall()
+        
+        # Энг кўп вазифа кўшилган туман
+        cursor.execute('''
+            SELECT tuman, COUNT(*) as task_count
+            FROM daily_works 
+            WHERE sana = ?
+            GROUP BY tuman
+            ORDER BY task_count DESC
+            LIMIT 1
+        ''', (last_sana,))
+        
+        top_district_result = cursor.fetchone()
+        top_district = top_district_result if top_district_result else (None, 0)
+        
+        lines = [
+            f"📋 *Кунлик ишлар (Excel) - Ҳисобот*\n",
+            f"📅 *Сана:* {last_sana}",
+            f"",
+            f"📊 *Умумий статистика:*",
+            f"• Жами вазифалар: *{total_tasks} та*",
+            f"• Бажарилган: *{completed_tasks} та*",
+            f"• Бажарилмаган: *{total_tasks - completed_tasks} та*",
+            f"• Туманлар сони: *{active_districts} та*",
+            f"• Бажариш фоизи: *{int(completed_tasks/total_tasks*100 if total_tasks > 0 else 0)}%*",
+            f""
+        ]
+        
+        if top_district[0]:
+            lines.append(f"🏆 *Энг фаол туман:* {top_district[0]} ({top_district[1]} та вазифа)")
+        
+        if district_stats:
+            lines.append(f"\n🗂 *Туманлар бўйича таҳлил:*")
+            lines.append("─" * 40)
+            for tuman, task_count, completed_count in district_stats[:10]:  # Фақат биринчи 10 таси
+                completion_rate = int(completed_count/task_count*100) if task_count > 0 else 0
+                lines.append(f"📍 *{tuman}:* {task_count} та")
+                lines.append(f"   ✅ {completed_count} та | 📊 {completion_rate}%")
+                lines.append("─" * 40)
+        
+        # Агар маълумотлар кам бўлса
+        if total_tasks == 0:
+            lines.append("\n⚠️ *Эълон:* Базада маълумот мавжуд эмас!")
+            lines.append("Маълумотларни янгилаш учун Google Sheets файлни текширинг.")
+        
+        keyboard = [
+            [InlineKeyboardButton("🗂 Туманлар рўйҳати", callback_data="daily_works:districts")],
+            [InlineKeyboardButton("📋 Барча вазифалар", callback_data="daily_works:all:0")],
+            [InlineKeyboardButton("🔄 Базани янгилаш", callback_data="daily_works:refresh_safe")],  # Янгиланган янгилаш тугмаси
+            [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
+        ]
+        
+        conn.close()
+        
+        await q.edit_message_text(
+            text=safe_text(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        print(f"daily_works_report_cb xatolik: {e}")
+        await q.edit_message_text(
+            text=f"❌ Хатолик юз берди:\n{str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]])
+        )
+
+async def daily_works_refresh_safe_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Безопасное обновление данных без удаления старых"""
+    q = update.callback_query
+    await q.answer()
+    
+    # Янгилаш жараёнини бошлаш
+    msg = await q.edit_message_text(
+        text="🔄 Маълумотлар янгиланмоқда...",
+        reply_markup=None
+    )
+    
+    try:
+        # Excel'дан янги маълумотларни олиш
+        df = get_daily_works()
+        
+        if df is None or df.empty:
+            await msg.edit_text(
+                text="⚠️ Excel'да маълумот топилмади!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")],
+                    [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
+                ])
+            )
+            return
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Охирги санани олиш
+        cursor.execute('SELECT sana FROM daily_works ORDER BY sana DESC LIMIT 1')
+        last_sana_result = cursor.fetchone()
+        last_sana = last_sana_result[0] if last_sana_result else None
+        
+        # Excel'дан санани олиш
+        excel_sana = datetime.now().strftime('%Y-%m-%d')
+        if hasattr(df, 'attrs') and 'date' in df.attrs:
+            excel_sana = df.attrs['date']
+        
+        # Агар бу сана базада мавжуд бўлмаса, янги сана қўшамиз
+        if last_sana != excel_sana:
+            # Эски маълумотларни ОЧИБ ТАШЛАМАЙМИЗ, фақат янги сана қўшамиз
+            records = []
+            for _, row in df.iterrows():
+                tuman = str(row.iloc[3]).strip() if len(row) > 3 else "Noma'lum"
+                vazifa = str(row.iloc[1]).strip() if len(row) > 1 else ""
+                holat = str(row.iloc[2]).strip() if len(row) > 2 else "—"
+                
+                if vazifa.strip() and tuman != "Noma'lum":
+                    records.append((tuman, vazifa, holat, excel_sana))
+            
+            if records:
+                cursor.executemany(
+                    "INSERT INTO daily_works (tuman, vazifa, holat, sana) VALUES (?, ?, ?, ?)",
+                    records
+                )
+                conn.commit()
+                
+                await msg.edit_text(
+                    text=f"✅ Янги маълумотлар қўшилди!\n📅 Янги сана: {excel_sana}\n📊 Янги вазифалар: {len(records)} та",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")],
+                        [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
+                    ])
+                )
+            else:
+                await msg.edit_text(
+                    text="⚠️ Янги маълумотлар топилмади!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")],
+                        [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
+                    ])
+                )
+        else:
+            # Бу сана учун маълумотлар аллақачон мавжуд
+            cursor.execute('SELECT COUNT(*) FROM daily_works WHERE sana = ?', (excel_sana,))
+            count_result = cursor.fetchone()
+            existing_count = count_result[0] if count_result else 0
+            
+            await msg.edit_text(
+                text=f"ℹ️ Бу сана учун маълумотлар аллақачон мавжуд\n📅 Сана: {excel_sana}\n📊 Мавжуд вазифалар: {existing_count} та",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")],
+                    [InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]
+                ])
+            )
+        
+        conn.close()
+        
+    except Exception as e:
+        print(f"daily_works_refresh_safe_cb xatolik: {e}")
+        await msg.edit_text(
+            text=f"❌ Янгилашда хатолик юз берди:\n{str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]])
+        )
+
+async def daily_works_districts_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Tumanlar ro'yxatini ko'rsatish"""
+    q = update.callback_query
+    await q.answer()
+    
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Охирги санадаги фаол туманлар
+        cursor.execute('''
+            SELECT sana FROM daily_works 
+            ORDER BY sana DESC 
+            LIMIT 1
+        ''')
+        
+        last_sana_result = cursor.fetchone()
+        last_sana = last_sana_result[0] if last_sana_result else datetime.now().strftime('%Y-%m-%d')
+        
+        cursor.execute('''
+            SELECT tuman, COUNT(*) as task_count,
+                   COUNT(CASE WHEN holat != '—' AND holat != '' AND holat IS NOT NULL THEN 1 END) as completed_count
+            FROM daily_works 
+            WHERE sana = ?
+            GROUP BY tuman
+            ORDER BY tuman
+        ''', (last_sana,))
+        
+        districts = cursor.fetchall()
+        
+        lines = [
+            f"🗂 *Кунлик ишлар - Туманлар рўйҳати*\n",
+            f"📅 *Сана:* {last_sana}",
+            f"📊 *Жами туманлар:* {len(districts)} та",
+            f""
+        ]
+        
+        keyboard = []
+        
+        for tuman, task_count, completed_count in districts:
+            if tuman and tuman != "Noma'lum":
+                completion_rate = int(completed_count/task_count*100) if task_count > 0 else 0
+                
+                lines.append(
+                    f"📍 *{tuman}:* {task_count} та вазифа\n"
+                    f"   ✅ Бажарилган: {completed_count} та ({completion_rate}%)\n"
+                    f"   {'─' * 30}\n"
+                )
+                
+                # Тугма матнини қисқартириш
+                btn_text = tuman
+                if len(btn_text) > 20:
+                    btn_text = btn_text[:17] + "..."
+                
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{btn_text} ({task_count} та)",
+                        callback_data=f"daily_works:district:{tuman}:0"
+                    )
+                ])
+        
+        if not districts:
+            lines.append("⚠️ Ҳозирча туманлар бўйича маълумот мавжуд эмас")
+        
+        keyboard.append([InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")])
+        keyboard.append([InlineKeyboardButton("🔄 Базани янгилаш", callback_data="daily_works:refresh_safe")])
+        keyboard.append([InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")])
+        
+        conn.close()
+        
+        await q.edit_message_text(
+            text=safe_text(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        print(f"daily_works_districts_cb xatolik: {e}")
+        await q.edit_message_text(
+            text=f"❌ Хатолик юз берди:\n{str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]])
+        )
+
+async def daily_works_district_detail_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Tuman bo'yicha batafsil ma'lumot"""
+    q = update.callback_query
+    await q.answer()
+    
+    try:
+        data_parts = q.data.split(":")
+        district = data_parts[2]
+        page = int(data_parts[3]) if len(data_parts) > 3 else 0
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Охирги санани олиш
+        cursor.execute('''
+            SELECT sana FROM daily_works 
+            ORDER BY sana DESC 
+            LIMIT 1
+        ''')
+        
+        last_sana_result = cursor.fetchone()
+        last_sana = last_sana_result[0] if last_sana_result else datetime.now().strftime('%Y-%m-%d')
+        
+        # Туман бўйича статистика
+        cursor.execute('''
+            SELECT COUNT(*), 
+                   COUNT(CASE WHEN holat != '—' AND holat != '' AND holat IS NOT NULL THEN 1 END) as completed_count
+            FROM daily_works 
+            WHERE sana = ? AND tuman = ?
+        ''', (last_sana, district))
+        
+        stats = cursor.fetchone()
+        total = stats[0] if stats else 0
+        completed = stats[1] if stats else 0
+        
+        offset = page * PAGE_SIZE
+        cursor.execute('''
+            SELECT vazifa, holat
+            FROM daily_works 
+            WHERE sana = ? AND tuman = ?
+            ORDER BY id
+            LIMIT ? OFFSET ?
+        ''', (last_sana, district, PAGE_SIZE, offset))
+        
+        tasks = cursor.fetchall()
+        
+        lines = [
+            f"📍 *{district} тумани - Кунлик ишлар*\n",
+            f"📅 *Сана:* {last_sana}",
+            f"📊 *Статистика:* {completed}/{total} та бажарилган ({int(completed/total*100 if total > 0 else 0)}%)",
+            f"📄 *Саҳифа:* {page + 1}/{(total + PAGE_SIZE - 1) // PAGE_SIZE}",
+            f""
+        ]
+        
+        if not tasks:
+            lines.append("⚠️ Бугун учун вазифалар мавжуд эмас")
+        else:
+            for i, (vazifa, holat) in enumerate(tasks, offset + 1):
+                status = "✅" if holat and holat != "—" and holat != "" else "⏳"
+                holat_display = holat if holat and holat != "—" else "Кутмоқда"
+                
+                # Вазифа матнини қисқартириш
+                vazifa_short = vazifa
+                if len(vazifa_short) > 50:
+                    vazifa_short = vazifa_short[:47] + "..."
+                
+                lines.append(
+                    f"{i}. {status} *{vazifa_short}*\n"
+                    f"   📌 *Ҳолати:* {holat_display}\n"
+                    f"   {'─' * 30}\n"
+                )
+        
+        keyboard = []
+        
+        # Пагер тугмалари
+        if page > 0:
+            keyboard.append([InlineKeyboardButton("◀️ Олдинги", callback_data=f"daily_works:district:{district}:{page-1}")])
+        if (page + 1) * PAGE_SIZE < total:
+            if page > 0:
+                keyboard[-1].append(InlineKeyboardButton("▶️ Кейинги", callback_data=f"daily_works:district:{district}:{page+1}"))
+            else:
+                keyboard.append([InlineKeyboardButton("▶️ Кейинги", callback_data=f"daily_works:district:{district}:{page+1}")])
+        
+        keyboard.append([InlineKeyboardButton("🗂 Туманлар рўйҳати", callback_data="daily_works:districts")])
+        keyboard.append([InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")])
+        keyboard.append([InlineKeyboardButton("🔄 Базани янгилаш", callback_data="daily_works:refresh_safe")])
+        keyboard.append([InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")])
+        
+        conn.close()
+        
+        await q.edit_message_text(
+            text=safe_text(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        print(f"daily_works_district_detail_cb xatolik: {e}")
+        await q.edit_message_text(
+            text=f"❌ Хатолик юз берди:\n{str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]])
+        )
+
+async def daily_works_all_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Barcha kunlik vazifalarni ko'rsatish"""
+    q = update.callback_query
+    await q.answer()
+    
+    try:
+        data_parts = q.data.split(":")
+        page = int(data_parts[2]) if len(data_parts) > 2 else 0
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Охирги санани олиш
+        cursor.execute('''
+            SELECT sana FROM daily_works 
+            ORDER BY sana DESC 
+            LIMIT 1
+        ''')
+        
+        last_sana_result = cursor.fetchone()
+        last_sana = last_sana_result[0] if last_sana_result else datetime.now().strftime('%Y-%m-%d')
+        
+        cursor.execute('''
+            SELECT COUNT(*) 
+            FROM daily_works 
+            WHERE sana = ?
+        ''', (last_sana,))
+        
+        total = cursor.fetchone()[0] or 0
+        
+        offset = page * PAGE_SIZE
+        cursor.execute('''
+            SELECT tuman, vazifa, holat
+            FROM daily_works 
+            WHERE sana = ?
+            ORDER BY tuman, id
+            LIMIT ? OFFSET ?
+        ''', (last_sana, PAGE_SIZE, offset))
+        
+        tasks = cursor.fetchall()
+        
+        lines = [
+            f"📋 *Барча кунлик ишлар*\n",
+            f"📅 *Сана:* {last_sana}",
+            f"📊 *Жами вазифалар:* {total} та",
+            f"📄 *Саҳифа:* {page + 1}/{(total + PAGE_SIZE - 1) // PAGE_SIZE}",
+            f""
+        ]
+        
+        if not tasks:
+            lines.append("⚠️ Бугун учун вазифалар мавжуд эмас")
+        else:
+            current_tuman = None
+            for tuman, vazifa, holat in tasks:
+                if tuman != current_tuman:
+                    lines.append(f"\n📍 *{tuman} тумани:*")
+                    current_tuman = tuman
+                
+                status = "✅" if holat and holat != "—" and holat != "" else "⏳"
+                holat_display = holat if holat and holat != "—" else "Кутмоқда"
+                
+                # Вазифа матнини қисқартириш
+                vazifa_short = vazifa
+                if len(vazifa_short) > 40:
+                    vazifa_short = vazifa_short[:37] + "..."
+                
+                lines.append(f"  {status} {vazifa_short}")
+                if holat_display != "Кутмоқда":
+                    lines.append(f"    📌 {holat_display}")
+        
+        keyboard = []
+        
+        # Пагер тугмалари
+        if page > 0:
+            keyboard.append([InlineKeyboardButton("◀️ Олдинги", callback_data=f"daily_works:all:{page-1}")])
+        if (page + 1) * PAGE_SIZE < total:
+            if page > 0:
+                keyboard[-1].append(InlineKeyboardButton("▶️ Кейинги", callback_data=f"daily_works:all:{page+1}"))
+            else:
+                keyboard.append([InlineKeyboardButton("▶️ Кейинги", callback_data=f"daily_works:all:{page+1}")])
+        
+        keyboard.append([InlineKeyboardButton("🗂 Туманлар бўйича", callback_data="daily_works:districts")])
+        keyboard.append([InlineKeyboardButton("📊 Бугунги ҳисобот", callback_data="daily_works:report")])
+        keyboard.append([InlineKeyboardButton("🔄 Базани янгилаш", callback_data="daily_works:refresh_safe")])
+        keyboard.append([InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")])
+        
+        conn.close()
+        
+        await q.edit_message_text(
+            text=safe_text(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        print(f"daily_works_all_cb xatolik: {e}")
+        await q.edit_message_text(
+            text=f"❌ Хатолик юз берди:\n{str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Орқага", callback_data="back:main")]])
+        )
+
+# =========================
+# DAILY WORKS CALLBACK HANDLER - YANGИЛАНГАН ВАРИАНТ
+# =========================
+
+async def daily_works_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Kunlik ishlar uchun callback handler"""
+    q = update.callback_query
+    await q.answer()
+    
+    data_parts = q.data.split(":")
+    action = data_parts[1]
+    
+    if action == "report":
+        await daily_works_report_cb(update, ctx)
+    elif action == "districts":
+        await daily_works_districts_cb(update, ctx)
+    elif action == "district":
+        await daily_works_district_detail_cb(update, ctx)
+    elif action == "all":
+        await daily_works_all_cb(update, ctx)
+    elif action == "refresh_safe":  # Янгиланган янгилаш тугмаси
+        await daily_works_refresh_safe_cb(update, ctx)
+
+# =========================
+# SYNCHRONIZATION FUNCTIONS - YANGИЛАНГАН ВАРИАНТ
+# =========================
+
+def sync_daily_works_to_db_safe():
+    """Google Sheets dan SQLite ga ma'lumotlarni yuklash (eskilarini ochib tashlamaydi)"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlar ma'lumotlari yangilanmoqda...")
+    
+    try:
+        # Google Sheets dan kunlik ishlar ma'lumotlarini olish
+        df = get_daily_works()
+        
+        if df is None or df.empty:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlar ma'lumotlari topilmadi")
+            return
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Excel'дан санани олиш
+        excel_sana = datetime.now().strftime('%Y-%m-%d')
+        if hasattr(df, 'attrs') and 'date' in df.attrs:
+            excel_sana = df.attrs['date']
+        
+        # Агар бу сана базада мавжуд бўлмаса, фақат ундаги маълумотларни очиб ташлаймиз
+        cursor.execute("DELETE FROM daily_works WHERE sana = ?", (excel_sana,))
+        
+        # Янги маълумотларни қўшиш
+        records = []
+        for _, row in df.iterrows():
+            tuman = str(row.iloc[3]).strip() if len(row) > 3 else "Noma'lum"
+            vazifa = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            holat = str(row.iloc[2]).strip() if len(row) > 2 else "—"
+            
+            if vazifa.strip() and tuman != "Noma'lum":
+                records.append((tuman, vazifa, holat, excel_sana))
+        
+        if records:
+            cursor.executemany(
+                "INSERT INTO daily_works (tuman, vazifa, holat, sana) VALUES (?, ?, ?, ?)",
+                records
+            )
+            conn.commit()
+            
+            cursor.execute("SELECT COUNT(*) FROM daily_works")
+            total_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT DISTINCT sana FROM daily_works ORDER BY sana DESC")
+            sana_list = cursor.fetchall()
+            
+            conn.close()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {len(records)} та янги вазифа сақланди ✓")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Жами вазифалар: {total_count} та")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Саналар: {[s[0] for s in sana_list[:5]]}")
+        else:
+            conn.close()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Сақлаш учун янги маълумотлар мавжуд эмас")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kunlik ishlarni янгилашда хатолик: {e}")
+        import traceback
+        traceback.print_exc()
+
+def start_sync_service():
+    """Sinxronizatsiya servisi"""
+    # Дастлабки юклаш
+    sync_sheets_to_db()
+    sync_daily_works_to_db_safe()  # Янгиланган функция
+    
+    def sync_loop():
+        while True:
+            ttime.sleep(300)  # 5 минут
+            sync_sheets_to_db()
+            sync_daily_works_to_db_safe()  # Янгиланган функция
+    
+    thread = threading.Thread(target=sync_loop, daemon=True)
+    thread.start()
+
+# =========================
+# QOLGAN KODLAR
+# =========================
+
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Matnli xabarlarni qayta ishlash (rejalar qo'shish uchun)"""
     if update.effective_user.id not in USERS:
@@ -1913,8 +2432,11 @@ async def check_due_dates(context: ContextTypes.DEFAULT_TYPE):
         print(f"check_due_dates xatolik: {e}")
 
 # =========================
-# QOLGAN KODLAR O'ZGARMADI (size_cb, corp_cb, dist_cb, va boshqalar)
+# QOLGAN KODLAR O'ZGARMADI
 # =========================
+
+# ... (qolgan funksiyalar o'zgarmagan holda qoladi: size_cb, corp_cb, dist_cb, va boshqalar)
+
 async def show_problems_by_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, status_type):
     """Muammolarni holati bo'yicha ko'rsatish"""
     q = update.callback_query
@@ -2003,7 +2525,6 @@ async def show_problems_by_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         )
     finally:
         conn.close()
-
 
 async def size_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2196,10 +2717,6 @@ async def size_dist_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await edit(ctx, update, safe_text(lines), InlineKeyboardMarkup(kb))
 
-# =========================
-# KORXONA → TUMAN → LOYIHA
-# =========================
-
 async def corp_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -2294,10 +2811,6 @@ async def corpdist_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         safe_text(lines),
         InlineKeyboardMarkup(kb)
     )
-
-# =========================
-# TUMANLAR → PROYEKTLAR
-# =========================
 
 async def show_districts(update, ctx, df=None):
     conn = sqlite3.connect(DB_FILE)
@@ -2412,10 +2925,6 @@ async def dist_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await edit(ctx, update, safe_text(lines), InlineKeyboardMarkup(kb))
 
-# =========================
-# TUMANLARDA MUAMMOLI LOYIHALAR
-# =========================
-
 async def problem_district_detail_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -2523,10 +3032,6 @@ async def problem_district_detail_cb(update: Update, ctx: ContextTypes.DEFAULT_T
         )
     finally:
         conn.close()
-
-# =========================
-# XODIMLAR BO'YICHA LOYIHALAR
-# =========================
 
 async def employee_projects_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Mas'ul bo'yicha loyihalarni ko'rsatish"""
@@ -2654,10 +3159,6 @@ async def employee_projects_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     finally:
         conn.close()
-
-# Iltimos, yuqoridagi funksiyalarnи o'zgarmagan holda qoldiring
-
-# Faqat daily plans bilan bog'liq funksiyalar o'zgartirildi
 
 def get_muddat_stats():
     """Muammo muddati bo'yicha statistika"""
@@ -2803,7 +3304,6 @@ def get_muddat_stats():
         conn.close()
         return None
 
-
 def get_employee_stats():
     """Xodimlar (mas'ullar) bo'yicha statistika"""
     conn = sqlite3.connect(DB_FILE)
@@ -2894,8 +3394,6 @@ def get_employee_stats():
         conn.close()
         return None
 
-
-
 # =========================
 # MENU CALLBACK HANDLERS
 # =========================
@@ -2931,9 +3429,6 @@ async def menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await daily_plans_cb(update, ctx)
             return
         
-        key = data_parts[1]
-        ctx.user_data.clear()
-        
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
@@ -2958,8 +3453,6 @@ async def menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Agar key mapping'da bo'lsa, yangi key'ga o'tkaz
         if key in key_mapping:
             key = key_mapping[key]
-        
-        print(f"DEBUG: Processing key = {key}")
         
         if key == "corp":
             cursor.execute("SELECT COUNT(*) FROM projects")
@@ -3425,7 +3918,6 @@ async def menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
     
-
     except Exception as e:
         print(f"menu_cb xatolik: {e}")
         import traceback
@@ -3455,7 +3947,7 @@ async def daily_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await daily_add_cb(update, ctx)
     elif action == "my_plans":
         await daily_my_plans_cb(update, ctx)
-    elif action == "all_plans":  # YANGI QO'SHILDI
+    elif action == "all_plans":
         await daily_all_plans_cb(update, ctx)
     elif action == "upcoming":
         await daily_upcoming_cb(update, ctx)
@@ -3474,262 +3966,6 @@ async def daily_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "clear_confirm":
         await daily_clear_confirm_cb(update, ctx)
 
-# Tumanlar ro'yxati - tartib muhim!
-ALLOWED_DISTRICTS = [
-    "Наманган шаҳри",
-    "Давлатобод тумани",
-    "Янги Наманган тумани",
-    "Мингбулоқ тумани",
-    "Косонсой тумани",
-    "Наманган тумани",
-    "Норин тумани",
-    "Поп тумани",
-    "Тўрақўрғон тумани",
-    "Уйчи тумани",
-    "Учқўрғон тумани",
-    "Чортоқ тумани",
-    "Чуст тумани",
-    "Янгиқўрғон тумани"
-]
-
-# Jadvaldan tuman bo'yicha statistika olish
-def generate_daily_report(df):
-    if df.empty:
-        return "Bugungi kun uchun ma'lumot kiritilmagan."
-
-    # D ustuni tuman deb hisoblaymiz (4-ustun, indeks 3)
-    df.columns = df.columns.str.strip()  # ustun nomlaridagi bo'shliqlarni tozalash
-    district_col = df.columns[3]         # odatda 4-ustun
-
-    stats = {}
-    for dist in ALLOWED_DISTRICTS:
-        count = len(df[df[district_col].str.strip() == dist])
-        stats[dist] = count
-
-    # Umumiy statistika
-    total_tasks = len(df)
-    active_districts = sum(1 for v in stats.values() if v > 0)
-    
-    # Hisobot matni
-    lines = []
-    lines.append(f"📅 Kunlik ishlar hisoboti – {df.attrs.get('date', 'sana ko‘rsatilmagan')}")
-    lines.append(f"Jami kiritilgan vazifalar: {total_tasks} ta")
-    lines.append(f"Faol tumanlar soni: {active_districts} ta\n")
-    
-    lines.append("Tumanlar bo'yicha holat (tartib o‘zgarmaydi):")
-    lines.append("─" * 45)
-    
-    for dist in ALLOWED_DISTRICTS:
-        cnt = stats[dist]
-        if cnt > 0:
-            lines.append(f"🏙 {dist:<18} | {cnt:3d} ta vazifa")
-        else:
-            lines.append(f"🏙 {dist:<18} | —")
-    
-    lines.append("─" * 45)
-    
-    # Oddiy tahlil
-    max_dist = max(stats, key=stats.get)
-    min_dist_active = min((d for d in ALLOWED_DISTRICTS if stats[d] > 0), key=lambda d: stats[d], default=None)
-    
-    if total_tasks > 0:
-        lines.append("\nQisqa tahlil:")
-        lines.append(f"• Eng ko'p vazifa kiritgan tuman: {max_dist} ({stats[max_dist]} ta)")
-        if min_dist_active:
-            lines.append(f"• Eng kam vazifa (lekin bor): {min_dist_active} ({stats[min_dist_active]} ta)")
-        lines.append("• Bo'sh tumanlar — keyingi kun uchun e'tibor berish kerak!")
-    
-    return "\n".join(lines)
-
-async def daily_works_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kunlik ishlar (Excel) ni ko'rsatish"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    if user_id not in USERS:
-        await query.edit_message_text("⚠️ Ruxsat yo'q!")
-        return
-    
-    try:
-        df = get_daily_works()
-        
-        if df.empty:
-            text = "📋 Kunlik ishlar sheet'ida ma'lumot yo'q!"
-        else:
-            # Ma'lumotlarni formatlash (masalan, markdown jadval)
-            text = "📋 **Kunlik ishlar (Excel dan):**\n\n"
-            text += df.to_markdown(index=False)  # Pandas to_markdown yordamida jadval
-            
-            if len(text) > MAX_TEXT:
-                text = text[:MAX_TEXT] + "\n... (to'liq ko'rish uchun Excel ni oching)"
-        
-        # Tugmalar (masalan, orqaga qaytish)
-        keyboard = [
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="menu:main")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-    
-    except Exception as e:
-        await query.edit_message_text(f"⚠️ Xatolik: {str(e)}")
-
-def sync_daily_works_to_db():
-    try:
-        df = get_daily_works()  # Sizning "kunlik ishlar" sheetidan o'qish funksiyangiz
-        if df.empty:
-            return
-        
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        sana = df.attrs.get('date')  # D2 dagi sana
-        if not sana:
-            sana = datetime.now().strftime('%Y-%m-%d')
-        
-        # Eski bugungi ma'lumotlarni tozalash
-        cursor.execute("DELETE FROM daily_works WHERE sana = ?", (sana,))
-        
-        records = []
-        for _, row in df.iterrows():
-            tuman = str(row.get('Tuman nomi', '')).strip() or "Noma'lum"
-            vazifa = str(row.get('Amalga oshiriladigan vazifalar...', '')).strip()
-            holat = str(row.get('Bajarilishi...', '')).strip() or "—"
-            
-            if vazifa:
-                records.append((tuman, vazifa, holat, sana))
-        
-        if records:
-            cursor.executemany(
-                "INSERT INTO daily_works (tuman, vazifa, holat, sana) VALUES (?, ?, ?, ?)",
-                records
-            )
-            conn.commit()
-            print(f"Kunlik ishlar: {len(records)} ta yozuv saqlandi ({sana})")
-        
-        conn.close()
-        
-    except Exception as e:
-        print(f"Kunlik ishlar sinxronizatsiyada xato: {e}")
-
-def get_daily_works():
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query(
-        "SELECT tuman, vazifa, holat, sana FROM daily_works ORDER BY sana DESC LIMIT 1000",
-        conn
-    )
-    conn.close()
-    
-    if not df.empty:
-        latest_sana = df['sana'].max()
-        df = df[df['sana'] == latest_sana]
-        df.attrs['date'] = latest_sana
-    
-    return df
-
-async def daily_works_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # callback_data = daily_works:detail:Туман номи
-    _, _, district = query.data.split(":", 2)
-    
-    df = get_daily_works()
-    if df.empty:
-        await query.edit_message_text("Ma'lumot yo'q.")
-        return
-    
-    district_col = df.columns[3]      # D ustuni - tuman
-    task_col = df.columns[1]          # B ustuni - vazifa nomi (sizning jadvalingizga qarab o'zgartiring)
-    status_col = df.columns[2]        # C ustuni - bajarilish holati
-    
-    district_df = df[df[district_col].str.strip() == district].copy()
-    
-    if district_df.empty:
-        text = f"{district} tumani uchun bugun vazifa topilmadi."
-    else:
-        lines = [
-            f"📋 {district} tumani – Kunlik reja ({df.attrs.get('date', 'sana')})",
-            f"Jami vazifalar: {len(district_df)} ta",
-            "─" * 45,
-        ]
-        
-        for i, row in district_df.iterrows():
-            task = row[task_col][:60] + "..." if len(row[task_col]) > 60 else row[task_col]
-            status = row[status_col] if pd.notna(row[status_col]) else "—"
-            lines.append(f"{i+1:2d}. {task}")
-            lines.append(f"   Holat: {status}\n")
-        
-        lines.append("─" * 45)
-        lines.append("PDF shaklida saqlash uchun quyidagi tugmani bosing ↓")
-        
-        text = "\n".join(lines)
-    
-    keyboard = [
-        [InlineKeyboardButton("📄 PDF yuklab olish", callback_data=f"daily_works:pdf:{district}")],
-        [InlineKeyboardButton("🔙 Hisobotga qaytish", callback_data="daily_works:report")],
-        [InlineKeyboardButton("🏠 Asosiy menyuga", callback_data="menu:main")]
-    ]
-    
-    await query.edit_message_text(
-        text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-# requirements.txt ga qo'shing:
-# reportlab
-
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from io import BytesIO
-
-async def daily_works_pdf_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    _, _, district = query.data.split(":", 2)
-    
-    df = get_daily_works()
-    district_df = df[df[df.columns[3]].str.strip() == district]
-    
-    if district_df.empty:
-        await query.answer("Ma'lumot yo'q", show_alert=True)
-        return
-    
-    # PDF yaratish
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, height - 80, f"{district} tumani – Kunlik ish rejasi")
-    c.setFont("Helvetica", 12)
-    c.drawString(50, height - 110, f"Sana: {df.attrs.get('date', '—')}")
-    
-    y = height - 150
-    for i, row in district_df.iterrows():
-        task = str(row[1])[:80] + "..." if len(str(row[1])) > 80 else str(row[1])
-        status = str(row[2]) if pd.notna(row[2]) else "—"
-        c.drawString(50, y, f"{i+1}. {task}")
-        c.drawString(70, y - 15, f"Holat: {status}")
-        y -= 40
-        if y < 100:
-            c.showPage()
-            y = height - 80
-    
-    c.save()
-    buffer.seek(0)
-    
-    # PDF ni yuborish
-    await context.bot.send_document(
-        chat_id=query.message.chat_id,
-        document=buffer,
-        filename=f"kunlik_reja_{district}_{df.attrs.get('date', 'sana')}.pdf",
-        caption=f"{district} tumani uchun kunlik reja"
-    )
-    
-    await query.answer("PDF yuborildi!", show_alert=True)
-
 async def back_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -3747,6 +3983,9 @@ async def back_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif target == "district":
         await show_districts(update, ctx)
 
+# =========================
+# DAILY PROBLEM REPORT
+# =========================
 
 async def daily_problem_report(context: ContextTypes.DEFAULT_TYPE):
     """Kundalik muammoli loyihalar hisoboti"""
@@ -3888,7 +4127,6 @@ async def daily_problem_report(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"daily_problem_report xatolik: {e}")
 
-
 # =========================
 # START
 # =========================
@@ -3902,6 +4140,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists(DB_FILE):
         msg = await update.message.reply_text("🔄 Маълумотлар юкланмоқда, бироз кутінг...")
         sync_sheets_to_db()
+        sync_daily_works_to_db()
         await msg.delete()
 
     await update.message.reply_text(
@@ -4022,7 +4261,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern="^menu:"))
     
-    # Loyihalar bilan bog'liq handlerlar (o'zgarmagan)
+    # Loyihalar bilan bog'liq handlerlar
     app.add_handler(CallbackQueryHandler(corp_cb, pattern="^corp:"))
     app.add_handler(CallbackQueryHandler(dist_cb, pattern="^dist:"))
     app.add_handler(CallbackQueryHandler(corpdist_cb, pattern="^corpdist:"))
@@ -4031,12 +4270,13 @@ def main():
     app.add_handler(CallbackQueryHandler(size_dist_cb, pattern="^sizeDist:"))
     app.add_handler(CallbackQueryHandler(problem_district_detail_cb, pattern="^prob_dist:"))
     
-    # Kunlik rejalar uchun yangi handlerlar
+    # Kunlik rejalar uchun handlerlar
     app.add_handler(CallbackQueryHandler(daily_cb, pattern="^daily:"))
-#    app.add_handler(CallbackQueryHandler(daily_works_cb, pattern="^daily_works:"))
-    app.add_handler(CallbackQueryHandler(daily_works_cb, pattern="^daily_works:report$"))
-    app.add_handler(CallbackQueryHandler(daily_works_detail_cb, pattern="^daily_works:detail:"))
-    app.add_handler(CallbackQueryHandler(daily_works_pdf_cb, pattern="^daily_works:pdf:"))
+    
+    # Kunlik ishlar uchun handlerlar
+    app.add_handler(CallbackQueryHandler(daily_works_cb, pattern="^daily_works:"))
+    
+    # Matnli xabarlarni qayta ishlash
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     # ===== BACKGROUND TASKS =====
@@ -4074,7 +4314,7 @@ def main():
         print("⚠️ Report scheduler ishlamadi, lekin bot ishlaydi")
 
     print("\n" + "="*50)
-    print("🤖 BOT ISHGA TUSHDI! (SQL + Daily Plans with Due Dates)")
+    print("🤖 BOT ISHGA TUSHDI! (SQL + Daily Plans + Daily Works)")
     print("="*50)
     print("📊 Google Sheets har 5 minutda SQLite bazaga yangilanadi")
     print(f"💾 Database fayli: {DB_FILE}")
@@ -4084,10 +4324,9 @@ def main():
     print("  • Ish rejalari: har kuni soat 19:00 da")
     print("  • Muddati eslatmalar: har soat")
     print("📝 Yangi funksiyalar:")
-    print("  • Ish rejalariga muddat qo'shish (format: текст | YYYY-MM-DD)")
-    print("  • Muddati kelganda eslatma yuborish")
-    print("  • Kelajakdagi rejalarni ko'rish")
-    print("  • Bugungi muddati kelgan rejalar")
+    print("  • Kunlik ishlar (Excel) tizimi to'liq ishlaydi")
+    print("  • Tumanlar bo'yicha statistika")
+    print("  • Barcha vazifalarni ko'rish")
     print("✅ /start buyrug'ini tekshiring\n")
     
     app.run_polling()
